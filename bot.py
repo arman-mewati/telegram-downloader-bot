@@ -1,11 +1,33 @@
 import yt_dlp
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
 TOKEN = "8628787355:AAFClhBFZyfu8XkRNFiXxeVSjCJgoqoHm9o"
 
 
-# START COMMAND
+# ---------------- WEB SERVER (ANTI SLEEP) ---------------- #
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"AMM Reels Bot is running")
+
+
+def run_server():
+    server = HTTPServer(("0.0.0.0", 10000), Handler)
+    server.serve_forever()
+
+
+threading.Thread(target=run_server).start()
+
+
+# ---------------- START COMMAND ---------------- #
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
@@ -21,7 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Download Instagram Reels & Facebook videos instantly.
 
-📌 Send video link and get the video in seconds.
+Send video link and get video in seconds.
 
 Created by Arman Mamliya
 """
@@ -29,37 +51,31 @@ Created by Arman Mamliya
     await update.message.reply_text(text, reply_markup=reply_markup)
 
 
-# HELP COMMAND
+# ---------------- HELP ---------------- #
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = """
-📌 How to use AMM Reels
-
-1️⃣ Copy Instagram or Facebook video link  
-2️⃣ Send the link to this bot  
-3️⃣ Bot will download the video instantly
-
-Simple • Fast • Free
-"""
-
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        "📌 How to use:\n\n"
+        "1️⃣ Copy Instagram or Facebook video link\n"
+        "2️⃣ Send it here\n"
+        "3️⃣ Bot will download video instantly"
+    )
 
 
-# ABOUT COMMAND
+# ---------------- ABOUT ---------------- #
+
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = """
-🤖 AMM Reels
-
-Fast Instagram & Facebook video downloader.
-
-Created by Arman Mamliya.
-"""
-
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        "🤖 AMM Reels\n\n"
+        "Fast Instagram & Facebook video downloader.\n\n"
+        "Created by Arman Mamliya."
+    )
 
 
-# BUTTON HANDLER
+# ---------------- BUTTON HANDLER ---------------- #
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
@@ -84,7 +100,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# VIDEO DOWNLOADER WITH LOADING STATUS
+# ---------------- VIDEO DOWNLOADER ---------------- #
+
 async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = update.message.text
@@ -96,6 +113,7 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Processing link...")
 
     try:
+
         await msg.edit_text("⬇️ Downloading video...")
 
         ydl_opts = {
@@ -116,7 +134,8 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("⚠️ Failed to download video.")
 
 
-# MAIN APP
+# ---------------- MAIN BOT ---------------- #
+
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
@@ -124,5 +143,7 @@ app.add_handler(CommandHandler("help", help_command))
 app.add_handler(CommandHandler("about", about))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, downloader))
+
+print("Bot is running...")
 
 app.run_polling()
