@@ -10,7 +10,7 @@ TOKEN = "8628787355:AAFClhBFZyfu8XkRNFiXxeVSjCJgoqoHm9o"
 user_links = {}
 
 
-# ---------- WEB SERVER (ANTI SLEEP) ---------- #
+# ---------------- ANTI SLEEP SERVER ---------------- #
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -28,7 +28,7 @@ def run_server():
 threading.Thread(target=run_server).start()
 
 
-# ---------- START ---------- #
+# ---------------- START ---------------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -56,7 +56,7 @@ Created by Arman Mamliya
     await update.message.reply_text(text, reply_markup=reply_markup)
 
 
-# ---------- HELP ---------- #
+# ---------------- HELP ---------------- #
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -69,7 +69,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- ABOUT ---------- #
+# ---------------- ABOUT ---------------- #
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -80,7 +80,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- BUTTONS ---------- #
+# ---------------- BUTTON HANDLER ---------------- #
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -99,19 +99,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("AMM Reels by Arman Mamliya")
 
     elif query.data == "hd":
-
         await download_video(query, user_id, "best")
 
     elif query.data == "sd":
-
         await download_video(query, user_id, "worst")
 
     elif query.data == "audio":
+        await download_video(query, user_id, "audio")
 
-        await download_video(query, user_id, "bestaudio")
 
-
-# ---------- DOWNLOAD FUNCTION ---------- #
+# ---------------- DOWNLOAD FUNCTION ---------------- #
 
 async def download_video(query, user_id, quality):
 
@@ -125,24 +122,50 @@ async def download_video(query, user_id, quality):
 
     try:
 
-        ydl_opts = {
-            'format': quality,
-            'outtmpl': 'video.mp4'
-        }
+        if quality == "audio":
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': 'audio.%(ext)s',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            }
 
-        await query.edit_message_text("📤 Uploading...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-        await query.message.reply_video(video=open("video.mp4", "rb"))
+            await query.edit_message_text("📤 Uploading audio...")
 
-    except:
+            await query.message.reply_audio(audio=open("audio.mp3", "rb"))
+
+
+        else:
+
+            ydl_opts = {
+                'format': quality,
+                'outtmpl': 'video.mp4'
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            await query.edit_message_text("📤 Uploading video...")
+
+            await query.message.reply_video(video=open("video.mp4", "rb"))
+
+
+        await query.edit_message_text("✅ Download complete!")
+
+    except Exception as e:
 
         await query.edit_message_text("⚠️ Download failed.")
+        print(e)
 
 
-# ---------- LINK RECEIVER ---------- #
+# ---------------- LINK RECEIVER ---------------- #
 
 async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -160,7 +183,7 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("SD Download", callback_data="sd")
         ],
         [
-            InlineKeyboardButton("Audio Only", callback_data="audio")
+            InlineKeyboardButton("Audio Only (MP3)", callback_data="audio")
         ]
     ]
 
@@ -172,7 +195,7 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- MAIN ---------- #
+# ---------------- MAIN BOT ---------------- #
 
 app = ApplicationBuilder().token(TOKEN).build()
 
