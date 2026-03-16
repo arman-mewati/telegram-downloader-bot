@@ -21,7 +21,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Download Instagram Reels & Facebook videos instantly.
 
-Just send the video link and the bot will download it for you.
+📌 Send video link and get the video in seconds.
 
 Created by Arman Mamliya
 """
@@ -84,7 +84,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# VIDEO DOWNLOADER
+# VIDEO DOWNLOADER WITH LOADING STATUS
 async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = update.message.text
@@ -93,19 +93,27 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send a valid video link.")
         return
 
-    ydl_opts = {
-        'format': 'best',
-        'outtmpl': 'video.mp4'
-    }
+    msg = await update.message.reply_text("⏳ Processing link...")
 
     try:
+        await msg.edit_text("⬇️ Downloading video...")
+
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': 'video.mp4'
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
+        await msg.edit_text("📤 Uploading video...")
+
         await update.message.reply_video(video=open("video.mp4", "rb"))
 
+        await msg.edit_text("✅ Download complete!")
+
     except:
-        await update.message.reply_text("⚠️ Failed to download video.")
+        await msg.edit_text("⚠️ Failed to download video.")
 
 
 # MAIN APP
