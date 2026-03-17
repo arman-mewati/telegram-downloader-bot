@@ -1,5 +1,7 @@
 import yt_dlp
 import threading
+import time
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,8 +11,7 @@ TOKEN = "8628787355:AAFClhBFZyfu8XkRNFiXxeVSjCJgoqoHm9o"
 
 user_links = {}
 
-
-# ---------------- ANTI SLEEP SERVER ---------------- #
+# ----------- ANTI SLEEP SERVER ----------- #
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -19,16 +20,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"AMM Reels Bot Running")
 
-
 def run_server():
     server = HTTPServer(("0.0.0.0", 10000), Handler)
     server.serve_forever()
 
-
 threading.Thread(target=run_server).start()
 
 
-# ---------------- START ---------------- #
+# ----------- START ----------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -56,44 +55,41 @@ Created by Arman Mamliya
     await update.message.reply_text(text, reply_markup=reply_markup)
 
 
-# ---------------- HELP ---------------- #
+# ----------- HELP ----------- #
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
         "📌 How to use:\n\n"
         "1️⃣ Copy video link\n"
         "2️⃣ Send it here\n"
         "3️⃣ Choose quality\n"
-        "4️⃣ Download video"
+        "4️⃣ Download"
     )
 
 
-# ---------------- ABOUT ---------------- #
+# ----------- ABOUT ----------- #
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
         "🤖 AMM Reels\n\n"
-        "Instagram, Facebook & Pinterest downloader.\n\n"
+        "Fast video downloader.\n\n"
         "Created by Arman Mamliya."
     )
 
 
-# ---------------- BUTTON HANDLER ---------------- #
+# ----------- BUTTON HANDLER ----------- #
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
     await query.answer()
-
     user_id = query.from_user.id
 
     if query.data == "download":
         await query.edit_message_text("📎 Send video link.")
 
     elif query.data == "help":
-        await query.edit_message_text("Send video link and choose quality.")
+        await query.edit_message_text("Send link and choose quality.")
 
     elif query.data == "about":
         await query.edit_message_text("AMM Reels by Arman Mamliya")
@@ -108,7 +104,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await download_video(query, user_id, "audio")
 
 
-# ---------------- DOWNLOAD FUNCTION ---------------- #
+# ----------- DOWNLOAD FUNCTION ----------- #
 
 async def download_video(query, user_id, quality):
 
@@ -118,15 +114,17 @@ async def download_video(query, user_id, quality):
         await query.edit_message_text("Link expired. Send again.")
         return
 
-    await query.edit_message_text("⬇️ Downloading...")
+    await query.edit_message_text("⏳ Processing...")
 
     try:
 
         if quality == "audio":
 
+            filename = f"audio_{int(time.time())}.mp3"
+
             ydl_opts = {
                 'format': 'bestaudio/best',
-                'outtmpl': 'audio.%(ext)s',
+                'outtmpl': f"audio_{int(time.time())}.%(ext)s",
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -139,14 +137,22 @@ async def download_video(query, user_id, quality):
 
             await query.edit_message_text("📤 Uploading audio...")
 
-            await query.message.reply_audio(audio=open("audio.mp3", "rb"))
+            await query.message.reply_audio(
+                audio=open("audio.mp3", "rb"),
+                title="AMM Reels",
+                performer="AMM Reels"
+            )
+
+            os.remove("audio.mp3")
 
 
         else:
 
+            filename = f"video_{int(time.time())}.mp4"
+
             ydl_opts = {
                 'format': quality,
-                'outtmpl': 'video.mp4'
+                'outtmpl': filename
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -154,18 +160,19 @@ async def download_video(query, user_id, quality):
 
             await query.edit_message_text("📤 Uploading video...")
 
-            await query.message.reply_video(video=open("video.mp4", "rb"))
+            await query.message.reply_video(video=open(filename, "rb"))
+
+            os.remove(filename)
 
 
-        await query.edit_message_text("✅ Download complete!")
+        await query.edit_message_text("✅ Done!")
 
     except Exception as e:
-
         await query.edit_message_text("⚠️ Download failed.")
         print(e)
 
 
-# ---------------- LINK RECEIVER ---------------- #
+# ----------- LINK RECEIVER ----------- #
 
 async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -195,7 +202,7 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------------- MAIN BOT ---------------- #
+# ----------- MAIN ----------- #
 
 app = ApplicationBuilder().token(TOKEN).build()
 
