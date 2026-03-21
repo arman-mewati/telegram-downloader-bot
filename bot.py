@@ -1,391 +1,379 @@
-import yt_dlp
-import threading
-import time
 import os
 import json
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+import uuid
+import asyncio
+import logging
+import tempfile
+from pathlib import Path
 
+import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CommandHandler,
-    CallbackQueryHandler, filters, ContextTypes
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
 )
 
-# ============================================================
-#  CONFIG — set these as environment variables
-# ============================================================
-TOKEN       = os.getenv("BOT_TOKEN")
-ADMIN_ID    = int(os.getenv("ADMIN_ID", "0"))        # your Telegram user ID
-CHANNEL_ID  = os.getenv("CHANNEL_ID", "")            # e.g. @yourchannel  (leave "" to disable)
+# -------------------------------
+# Configuration & Setup
+# -------------------------------
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(id_) for id_ in os.getenv("ADMIN_IDS", "").split(",") if id_]
+FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")   # e.g. "@my_channel" or "-1001234567890"
 
-USERS_FILE  = "users.json"
+# User database (JSON file)
+USERS_FILE = "users.json"
 
-# ============================================================
-#  USERS DB  (simple JSON file)
-# ============================================================
-def load_users() -> set:
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
-def save_users(users: set):
+# Helper functions for user database
+def load_users():
+    """Load user IDs from JSON file."""
+    if not os.path.exists(USERS_FILE):
+        return set()
+    with open(USERS_FILE, "r") as f:
+        data = json.load(f)
+        return set(data.get("users", []))
+
+def save_users(users):
+    """Save user IDs to JSON file."""
     with open(USERS_FILE, "w") as f:
-        json.dump(list(users), f)
+        json.dump({"users": list(users)}, f)
 
-def add_user(uid: int):
-    users = load_users()
-    users.add(uid)
-    save_users(users)
+# Global set of user IDs (cached for performance)
+user_ids = load_users()
 
-# ============================================================
-#  IN-MEMORY STORE
-# ============================================================
-user_links: dict[int, str] = {}
+def add_user(user_id):
+    """Add user to the set and save if new."""
+    if user_id not in user_ids:
+        user_ids.add(user_id)
+        save_users(user_ids)
+        logger.info(f"New user added: {user_id}")
 
-# ============================================================
-#  ANTI-SLEEP WEB SERVER
-# ============================================================
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"AMM Reels Bot is alive!")
-
-    def log_message(self, *args):   # silence access logs
-        pass
-
-threading.Thread(target=lambda: HTTPServer(("0.0.0.0", 10000), Handler).serve_forever(),
-                 daemon=True).start()
-
-# ============================================================
-#  FORCE-JOIN HELPER
-# ============================================================
-async def is_subscribed(bot, user_id: int) -> bool:
-    """Return True if CHANNEL_ID is not set OR user has joined."""
-    if not CHANNEL_ID:
-        return True
+# -------------------------------
+# Force Join Check
+# -------------------------------
+async def is_user_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Check if user is a member of the force‑join channel."""
+    if not FORCE_CHANNEL:
+        return True  # no channel configured
     try:
-        member = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status not in ("left", "kicked")
-    except Exception:
-        return True   # if check fails, let the user through
+        member = await context.bot.get_chat_member(chat_id=FORCE_CHANNEL, user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as e:
+        logger.error(f"Failed to check membership for {user_id}: {e}")
+        return False
 
-def join_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],
-        [InlineKeyboardButton("✅ I Joined", callback_data="check_join")]
-    ])
-
-# ============================================================
-#  /start
-# ============================================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    add_user(user.id)
-
-    if not await is_subscribed(context.bot, user.id):
-        await update.message.reply_text(
-            "🔒 *Access Restricted!*\n\n"
-            "You must join our channel first to use this bot.\n"
-            "👇 Click below to join:",
-            parse_mode="Markdown",
-            reply_markup=join_keyboard()
-        )
-        return
-
-    await update.message.reply_text(
-        f"╔══════════════════════╗\n"
-        f"║   🎬 *AMM Reels Bot*   ║\n"
-        f"╚══════════════════════╝\n\n"
-        f"👋 Welcome, *{user.first_name}*!\n\n"
-        f"📥 *Supported Platforms:*\n"
-        f"  • Instagram Reels & Posts\n"
-        f"  • Facebook Videos\n"
-        f"  • Pinterest Videos\n\n"
-        f"🚀 *How to use:*\n"
-        f"  Simply paste any link and choose\n"
-        f"  🎬 Video  or  🎵 MP3\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown"
-    )
-
-# ============================================================
-#  LINK RECEIVER
-# ============================================================
-async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    add_user(user.id)
-
-    if not await is_subscribed(context.bot, user.id):
-        await update.message.reply_text(
-            "🔒 Join our channel first!",
-            reply_markup=join_keyboard()
-        )
-        return
-
-    url = update.message.text.strip()
-
-    if "http" not in url:
-        await update.message.reply_text(
-            "❌ *Invalid link!*\n\nPlease send a valid Instagram / Facebook / Pinterest URL.",
-            parse_mode="Markdown"
-        )
-        return
-
-    user_links[user.id] = url
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎬 Download Video", callback_data="video"),
-            InlineKeyboardButton("🎵 Download MP3",   callback_data="audio")
-        ],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-    ])
-
-    await update.message.reply_text(
-        "🔗 *Link received!*\n\nChoose download format:",
+async def force_join_required(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send message asking user to join the channel."""
+    chat_id = update.effective_chat.id
+    keyboard = [[InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{FORCE_CHANNEL.lstrip('@')}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "🔒 *Access Restricted*\n\n"
+            "You must join our channel to use this bot.\n"
+            "Click the button below and try again!"
+        ),
+        reply_markup=reply_markup,
         parse_mode="Markdown",
-        reply_markup=keyboard
     )
 
-# ============================================================
-#  BUTTON HANDLER
-# ============================================================
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# -------------------------------
+# Download Helpers with Progress
+# -------------------------------
+class ProgressHook:
+    """Helper to update a message with download progress."""
+    def __init__(self, context, chat_id, message_id):
+        self.context = context
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.last_percent = 0
 
-    user_id = query.from_user.id
-
-    # ── Force-join check ──
-    if query.data == "check_join":
-        if await is_subscribed(context.bot, user_id):
-            await query.edit_message_text(
-                "✅ *Access granted!*\n\nNow send me any Instagram / Facebook / Pinterest link.",
-                parse_mode="Markdown"
+    def __call__(self, d):
+        if d["status"] == "downloading":
+            percent = d.get("_percent_str", "0%").strip("%")
+            try:
+                percent = float(percent)
+            except:
+                percent = 0
+            # Update only if progress increased by at least 5% to avoid spam
+            if percent - self.last_percent >= 5:
+                self.last_percent = percent
+                asyncio.create_task(
+                    self.context.bot.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self.message_id,
+                        text=f"⬇️ Downloading... {percent:.1f}%",
+                    )
+                )
+        elif d["status"] == "finished":
+            asyncio.create_task(
+                self.context.bot.edit_message_text(
+                    chat_id=self.chat_id,
+                    message_id=self.message_id,
+                    text="📤 Processing and uploading...",
+                )
             )
-        else:
-            await query.answer("❌ You haven't joined yet!", show_alert=True)
-        return
 
-    if query.data == "cancel":
-        await query.edit_message_text("🚫 Cancelled.")
-        return
+async def download_video(chat_id, url, message_id, context):
+    """Download video as MP4 and send it."""
+    # Unique filename
+    temp_dir = tempfile.gettempdir()
+    filename = os.path.join(temp_dir, f"video_{uuid.uuid4().hex}.mp4")
 
-    url = user_links.get(user_id)
-    if not url:
-        await query.edit_message_text("⚠️ Session expired. Please send the link again.")
-        return
-
-    if query.data == "video":
-        await download_video(query, url)
-    elif query.data == "audio":
-        await download_audio(query, url)
-
-# ============================================================
-#  VIDEO DOWNLOAD
-# ============================================================
-async def download_video(query, url: str):
-    filename = f"video_{int(time.time())}.mp4"
-
-    steps = ["⏳ Starting download...", "⬇️ Downloading video  [▓░░░░░░░░░] 10%",
-             "⬇️ Downloading video  [▓▓▓▓░░░░░░] 40%",
-             "⬇️ Downloading video  [▓▓▓▓▓▓▓░░░] 70%",
-             "⬇️ Downloading video  [▓▓▓▓▓▓▓▓▓░] 90%"]
-
-    anim_task = threading.Thread(target=lambda: None, daemon=True)  # placeholder
-
-    await query.edit_message_text(steps[0])
+    ydl_opts = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": filename,
+        "progress_hooks": [ProgressHook(context, chat_id, message_id)],
+        "quiet": True,
+        "no_warnings": True,
+    }
 
     try:
-        ydl_opts = {
-            "format": "best[ext=mp4]/best",
-            "outtmpl": filename,
-            "quiet": True,
-            "no_warnings": True,
-        }
-
-        # Animate while downloading (simple sequential messages)
-        for step in steps[1:]:
-            await query.edit_message_text(step)
-            time.sleep(0.4)
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-
-        await query.edit_message_text("📤 Uploading to Telegram...")
-
-        with open(filename, "rb") as f:
-            await query.message.reply_video(
-                video=f,
-                caption=(
-                    "🎬 *Your video is ready!*\n"
-                    "━━━━━━━━━━━━━━━━\n"
-                    "📥 Downloaded via *AMM Reels Bot*"
-                ),
-                parse_mode="Markdown"
-            )
-
-        await query.edit_message_text("✅ *Done! Enjoy your video.* 🎉", parse_mode="Markdown")
-
-    except Exception as e:
-        await query.edit_message_text(
-            "❌ *Download failed!*\n\n"
-            "Possible reasons:\n"
-            "• Private / expired link\n"
-            "• Platform blocked the request\n\n"
-            "_Please try again with a different link._",
-            parse_mode="Markdown"
+        # Send the video
+        with open(filename, "rb") as video_file:
+            await context.bot.send_video(chat_id=chat_id, video=video_file)
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="✅ Video sent successfully!",
         )
-        print(f"[VIDEO ERROR] {e}")
+    except Exception as e:
+        logger.error(f"Video download error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="❌ Failed to download video. Please check the link and try again.",
+        )
     finally:
         if os.path.exists(filename):
             os.remove(filename)
 
-# ============================================================
-#  AUDIO DOWNLOAD
-# ============================================================
-async def download_audio(query, url: str):
-    base_name = f"audio_{int(time.time())}"
-    out_path  = f"{base_name}.mp3"
+async def download_audio(chat_id, url, message_id, context):
+    """Download audio as MP3 and send it."""
+    temp_dir = tempfile.gettempdir()
+    # yt-dlp will produce a temp file, we'll rename later
+    out_template = os.path.join(temp_dir, f"audio_{uuid.uuid4().hex}.%(ext)s")
 
-    await query.edit_message_text("🎵 Extracting audio... [▓░░░░░░░░░] 10%")
-
-    try:
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": f"{base_name}.%(ext)s",
-            "quiet": True,
-            "no_warnings": True,
-            "postprocessors": [{
+    ydl_opts = {
+        "format": "bestaudio",
+        "outtmpl": out_template,
+        "postprocessors": [
+            {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
-            }],
-        }
+            }
+        ],
+        "progress_hooks": [ProgressHook(context, chat_id, message_id)],
+        "quiet": True,
+        "no_warnings": True,
+    }
 
-        await query.edit_message_text("🎵 Extracting audio... [▓▓▓▓▓░░░░░] 50%")
-
+    try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        await query.edit_message_text("🎵 Extracting audio... [▓▓▓▓▓▓▓▓▓▓] 100%")
-        await query.edit_message_text("📤 Uploading audio...")
-
-        with open(out_path, "rb") as f:
-            await query.message.reply_audio(
-                audio=f,
-                title="AMM Reels",
-                performer="AMM Reels Bot",
-                caption=(
-                    "🎵 *Your audio is ready!*\n"
-                    "━━━━━━━━━━━━━━━━\n"
-                    "🎧 Downloaded via *AMM Reels Bot*"
-                ),
-                parse_mode="Markdown"
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "AMM Reels")
+            # Find the final mp3 file
+            base = out_template.replace(".%(ext)s", "")
+            mp3_file = base + ".mp3"
+            if not os.path.exists(mp3_file):
+                # sometimes the extension is different; try to find any .mp3
+                for f in os.listdir(temp_dir):
+                    if f.startswith(os.path.basename(base)) and f.endswith(".mp3"):
+                        mp3_file = os.path.join(temp_dir, f)
+                        break
+        # Send the audio
+        with open(mp3_file, "rb") as audio_file:
+            await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=audio_file,
+                title=title,
+                performer="AMM Reels",
             )
-
-        await query.edit_message_text("✅ *Done! Enjoy the music.* 🎶", parse_mode="Markdown")
-
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="✅ Audio sent successfully!",
+        )
     except Exception as e:
-        await query.edit_message_text(
-            "❌ *Audio extraction failed!*\n\n"
-            "_Make sure FFmpeg is installed and the link is valid._",
-            parse_mode="Markdown"
+        logger.error(f"Audio download error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="❌ Failed to extract audio. Please check the link and try again.",
         )
-        print(f"[AUDIO ERROR] {e}")
     finally:
-        for ext in ["mp3", "m4a", "webm", "opus"]:
-            f = f"{base_name}.{ext}"
-            if os.path.exists(f):
-                os.remove(f)
+        # Clean up any leftover files (both original and processed)
+        for f in os.listdir(temp_dir):
+            if f.startswith(os.path.basename(out_template).split(".%(ext)s")[0]):
+                try:
+                    os.remove(os.path.join(temp_dir, f))
+                except:
+                    pass
 
-# ============================================================
-#  ADMIN COMMANDS
-# ============================================================
-def admin_only(func):
-    """Decorator — only ADMIN_ID can run this command."""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ADMIN_ID:
-            await update.message.reply_text("🚫 Admin only command!")
-            return
-        await func(update, context)
-    return wrapper
+# -------------------------------
+# Handlers
+# -------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Welcome message with inline buttons."""
+    user_id = update.effective_user.id
+    add_user(user_id)
 
-@admin_only
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users = load_users()
-    await update.message.reply_text(
-        f"📊 *Bot Statistics*\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"👥 Total Users : *{len(users)}*\n"
-        f"🕐 Checked at  : `{datetime.now().strftime('%Y-%m-%d %H:%M')}`",
-        parse_mode="Markdown"
-    )
-
-@admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: `/broadcast Your message here`",
-            parse_mode="Markdown"
-        )
+    # Force join check
+    if not await is_user_member(context, user_id):
+        await force_join_required(update, context)
         return
 
+    welcome_text = (
+        "✨ *Welcome to AMM Reels Bot* ✨\n\n"
+        "I can download videos and audio from:\n"
+        "• Instagram\n"
+        "• Facebook\n"
+        "• Pinterest\n\n"
+        "Just send me a link and choose what you want!\n\n"
+        "🔗 *Tips:*\n"
+        "• Use /help for more info\n"
+        "• Admin: /stats, /broadcast"
+    )
+    keyboard = [
+        [InlineKeyboardButton("📖 Help", callback_data="help")],
+        [InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/your_username")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help command."""
+    help_text = (
+        "🆘 *How to use*\n\n"
+        "1. Send a valid link from Instagram, Facebook, or Pinterest.\n"
+        "2. Choose *Video* or *MP3* from the inline buttons.\n"
+        "3. Wait for the download and upload (progress shown).\n\n"
+        "*Admin commands:*\n"
+        "• /stats – show total users\n"
+        "• /broadcast <message> – send message to all users"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle video/audio button clicks."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    # Retrieve the stored URL from context.user_data
+    url = context.user_data.get("last_url")
+    if not url:
+        await query.edit_message_text("❌ No link found. Please send a link first.")
+        return
+
+    # Force join check again (in case user joined after clicking)
+    if not await is_user_member(context, user_id):
+        await force_join_required(update, context)
+        return
+
+    if query.data == "video":
+        await download_video(query.message.chat_id, url, query.message.message_id, context)
+    elif query.data == "audio":
+        await download_audio(query.message.chat_id, url, query.message.message_id, context)
+    elif query.data == "help":
+        await help_command(update, context)
+
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive a link and ask for format."""
+    user_id = update.effective_user.id
+    add_user(user_id)
+
+    # Force join check
+    if not await is_user_member(context, user_id):
+        await force_join_required(update, context)
+        return
+
+    url = update.message.text.strip()
+    if "http" not in url:
+        await update.message.reply_text("❌ Please send a valid link.")
+        return
+
+    # Store the URL in user_data for later use in button handler
+    context.user_data["last_url"] = url
+
+    keyboard = [
+        [InlineKeyboardButton("🎬 Video", callback_data="video")],
+        [InlineKeyboardButton("🎵 MP3", callback_data="audio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select the format you want:", reply_markup=reply_markup)
+
+# -------------------------------
+# Admin Commands
+# -------------------------------
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show total number of users (admin only)."""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+    total = len(user_ids)
+    await update.message.reply_text(f"📊 *Total users:* {total}", parse_mode="Markdown")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message to all users (admin only)."""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+
+    # The broadcast message is everything after the command
     message = " ".join(context.args)
-    users   = load_users()
-    sent    = 0
-    failed  = 0
+    if not message:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
 
-    status_msg = await update.message.reply_text(f"📢 Broadcasting to {len(users)} users...")
+    # Show a progress message
+    progress_msg = await update.message.reply_text("📢 Broadcasting... This may take a while.")
 
-    for uid in users:
+    success = 0
+    failed = 0
+    for uid in user_ids:
         try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text=(
-                    f"📢 *Announcement from AMM Reels Bot*\n"
-                    f"━━━━━━━━━━━━━━━━\n"
-                    f"{message}"
-                ),
-                parse_mode="Markdown"
-            )
-            sent += 1
-        except Exception:
+            await context.bot.send_message(chat_id=uid, text=message)
+            success += 1
+            await asyncio.sleep(0.05)  # small delay to avoid hitting limits
+        except Exception as e:
+            logger.warning(f"Failed to send broadcast to {uid}: {e}")
             failed += 1
-        time.sleep(0.05)   # respect rate limits
 
-    await status_msg.edit_text(
-        f"✅ *Broadcast complete!*\n\n"
-        f"📨 Sent   : *{sent}*\n"
-        f"❌ Failed : *{failed}*",
-        parse_mode="Markdown"
-    )
+    await progress_msg.edit_text(f"📢 Broadcast finished.\n✅ Sent: {success}\n❌ Failed: {failed}")
 
-@admin_only
-async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🛠 *Admin Commands*\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "`/stats`          — Total user count\n"
-        "`/broadcast msg`  — Send msg to all users\n"
-        "`/adminhelp`      — Show this menu",
-        parse_mode="Markdown"
-    )
+# -------------------------------
+# Main Application
+# -------------------------------
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-# ============================================================
-#  MAIN
-# ============================================================
-app = ApplicationBuilder().token(TOKEN).build()
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
-app.add_handler(CommandHandler("start",       start))
-app.add_handler(CommandHandler("stats",       stats))
-app.add_handler(CommandHandler("broadcast",   broadcast))
-app.add_handler(CommandHandler("adminhelp",   admin_help))
-app.add_handler(CallbackQueryHandler(button))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, downloader))
+    # Start polling
+    app.run_polling()
 
-print("🚀 AMM Reels Bot started!")
-app.run_polling()
+if __name__ == "__main__":
+    main()
