@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "8628787355:AAFClhBFZyfu8XkRNFiXxeVSjCJgoqoHm9o"
+# 🔐 Secure Token (Environment Variable)
+TOKEN = os.getenv("BOT_TOKEN")
 
 user_links = {}
 
@@ -16,9 +17,8 @@ user_links = {}
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"AMM Reels Bot Running")
+        self.wfile.write(b"AMM Reels Running")
 
 def run_server():
     server = HTTPServer(("0.0.0.0", 10000), Handler)
@@ -26,56 +26,20 @@ def run_server():
 
 threading.Thread(target=run_server).start()
 
-
 # ----------- START ----------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
-        [InlineKeyboardButton("📥 Download Video", callback_data="download")],
-        [InlineKeyboardButton("❓ Help", callback_data="help"),
-         InlineKeyboardButton("ℹ️ About", callback_data="about")]
+        [InlineKeyboardButton("📥 Download Video", callback_data="download")]
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    text = """
-👋 Welcome to AMM Reels
-
-Download videos from:
-• Instagram
-• Facebook
-• Pinterest
-
-Send video link to start.
-
-Created by Arman Mamliya
-"""
-
-    await update.message.reply_text(text, reply_markup=reply_markup)
-
-
-# ----------- HELP ----------- #
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📌 How to use:\n\n"
-        "1️⃣ Copy video link\n"
-        "2️⃣ Send it here\n"
-        "3️⃣ Choose quality\n"
-        "4️⃣ Download"
+        "👋 Welcome to AMM Reels\n\n"
+        "Send any video link:\n"
+        "Instagram | Facebook | Pinterest | YouTube",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
-
-# ----------- ABOUT ----------- #
-
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 AMM Reels\n\n"
-        "Fast video downloader.\n\n"
-        "Created by Arman Mamliya."
-    )
-
 
 # ----------- BUTTON HANDLER ----------- #
 
@@ -86,91 +50,94 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if query.data == "download":
-        await query.edit_message_text("📎 Send video link.")
+        await query.edit_message_text("📎 Send video link")
 
-    elif query.data == "help":
-        await query.edit_message_text("Send link and choose quality.")
+    elif query.data.startswith("video_"):
+        quality = query.data.split("_")[1]
+        await download_video(query, user_id, quality)
 
-    elif query.data == "about":
-        await query.edit_message_text("AMM Reels by Arman Mamliya")
+    elif query.data.startswith("audio_"):
+        quality = query.data.split("_")[1]
+        await download_audio(query, user_id, quality)
 
-    elif query.data == "hd":
-        await download_video(query, user_id, "best")
-
-    elif query.data == "sd":
-        await download_video(query, user_id, "worst")
-
-    elif query.data == "audio":
-        await download_video(query, user_id, "audio")
-
-
-# ----------- DOWNLOAD FUNCTION ----------- #
+# ----------- VIDEO DOWNLOAD ----------- #
 
 async def download_video(query, user_id, quality):
 
     url = user_links.get(user_id)
+    filename = f"video_{int(time.time())}.mp4"
 
-    if not url:
-        await query.edit_message_text("Link expired. Send again.")
-        return
-
-    await query.edit_message_text("⏳ Processing...")
+    await query.edit_message_text("⬇️ Downloading video...")
 
     try:
 
-        if quality == "audio":
-
-            filename = f"audio_{int(time.time())}.mp3"
-
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': f"audio_{int(time.time())}.%(ext)s",
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-            await query.edit_message_text("📤 Uploading audio...")
-
-            await query.message.reply_audio(
-                audio=open("audio.mp3", "rb"),
-                title="AMM Reels",
-                performer="AMM Reels"
-            )
-
-            os.remove("audio.mp3")
-
-
+        if quality == "1080":
+            fmt = "bestvideo[height<=1080]+bestaudio/best"
+        elif quality == "720":
+            fmt = "bestvideo[height<=720]+bestaudio/best"
         else:
+            fmt = "bestvideo[height<=480]+bestaudio/best"
 
-            filename = f"video_{int(time.time())}.mp4"
+        ydl_opts = {
+            'format': fmt,
+            'outtmpl': filename
+        }
 
-            ydl_opts = {
-                'format': quality,
-                'outtmpl': filename
-            }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+        await query.edit_message_text("📤 Uploading video...")
 
-            await query.edit_message_text("📤 Uploading video...")
+        await query.message.reply_video(open(filename, "rb"))
 
-            await query.message.reply_video(video=open(filename, "rb"))
-
-            os.remove(filename)
-
+        os.remove(filename)
 
         await query.edit_message_text("✅ Done!")
 
     except Exception as e:
-        await query.edit_message_text("⚠️ Download failed.")
+        await query.edit_message_text("❌ Failed")
         print(e)
 
+# ----------- AUDIO DOWNLOAD ----------- #
+
+async def download_audio(query, user_id, quality):
+
+    url = user_links.get(user_id)
+
+    await query.edit_message_text("🎵 Extracting audio...")
+
+    try:
+
+        filename = f"audio_{int(time.time())}.%(ext)s"
+
+        ydl_opts = {
+            'format': 'bestaudio',
+            'outtmpl': filename,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': quality,
+            }]
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        await query.edit_message_text("📤 Uploading audio...")
+
+        await query.message.reply_audio(
+            audio=open("audio.mp3", "rb"),
+            title="AMM Reels",
+            performer="AMM Reels"
+        )
+
+        os.remove("audio.mp3")
+
+        await query.edit_message_text("✅ Done!")
+
+    except Exception as e:
+        await query.edit_message_text("❌ Failed")
+        print(e)
 
 # ----------- LINK RECEIVER ----------- #
 
@@ -179,36 +146,34 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
 
     if "http" not in url:
-        await update.message.reply_text("Send valid link.")
+        await update.message.reply_text("❌ Send valid link")
         return
 
     user_links[update.effective_user.id] = url
 
     keyboard = [
         [
-            InlineKeyboardButton("HD Download", callback_data="hd"),
-            InlineKeyboardButton("SD Download", callback_data="sd")
+            InlineKeyboardButton("1080p", callback_data="video_1080"),
+            InlineKeyboardButton("720p", callback_data="video_720"),
+            InlineKeyboardButton("480p", callback_data="video_480")
         ],
         [
-            InlineKeyboardButton("Audio Only (MP3)", callback_data="audio")
+            InlineKeyboardButton("MP3 128kbps", callback_data="audio_128"),
+            InlineKeyboardButton("MP3 192kbps", callback_data="audio_192"),
+            InlineKeyboardButton("MP3 320kbps", callback_data="audio_320")
         ]
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        "Select download quality:",
-        reply_markup=reply_markup
+        "🎬 Select quality:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 # ----------- MAIN ----------- #
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("about", about))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, downloader))
 
