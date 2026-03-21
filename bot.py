@@ -25,68 +25,32 @@ threading.Thread(target=run_server).start()
 
 # ----------- START ----------- #
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Send video link")
+    await update.message.reply_text(
+        "👋 Welcome to AMM Reels\n\n"
+        "Send Instagram / Facebook / Pinterest link"
+    )
 
-# ----------- BUTTON ----------- #
+# ----------- BUTTON HANDLER ----------- #
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
     url = user_links.get(user_id)
 
-    if query.data.startswith("yt_"):
-        quality = query.data.split("_")[1]
-        await download_youtube(query, url, quality)
-
-    elif query.data == "video":
+    if query.data == "video":
         await download_video(query, url)
 
     elif query.data == "audio":
-        await download_audio(query, url, "192")
+        await download_audio(query, url)
 
-# ----------- YOUTUBE VIDEO ----------- #
-async def download_youtube(query, url, quality):
-
-    filename = f"video_{int(time.time())}.mp4"
-
-    await query.edit_message_text("⬇️ Downloading...")
-
-    try:
-        if quality == "1080":
-            fmt = "bestvideo[height<=1080]+bestaudio/best"
-        elif quality == "720":
-            fmt = "bestvideo[height<=720]+bestaudio/best"
-        else:
-            fmt = "best"
-
-        ydl_opts = {
-            'format': fmt,
-            'outtmpl': filename,
-            'merge_output_format': 'mp4'
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        await query.edit_message_text("📤 Uploading...")
-
-        await query.message.reply_video(open(filename, "rb"))
-
-        os.remove(filename)
-
-        await query.edit_message_text("✅ Done!")
-
-    except Exception as e:
-        await query.edit_message_text("❌ Failed")
-        print(e)
-
-# ----------- NORMAL VIDEO ----------- #
+# ----------- VIDEO DOWNLOAD ----------- #
 async def download_video(query, url):
 
     filename = f"video_{int(time.time())}.mp4"
 
-    await query.edit_message_text("⬇️ Downloading...")
+    await query.edit_message_text("⬇️ Downloading video...")
 
     try:
         ydl_opts = {
@@ -109,8 +73,8 @@ async def download_video(query, url):
         await query.edit_message_text("❌ Failed")
         print(e)
 
-# ----------- AUDIO (MP3) ----------- #
-async def download_audio(query, url, quality):
+# ----------- AUDIO DOWNLOAD ----------- #
+async def download_audio(query, url):
 
     await query.edit_message_text("🎵 Extracting audio...")
 
@@ -121,14 +85,14 @@ async def download_audio(query, url, quality):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': quality,
+                'preferredquality': '192',
             }]
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        await query.edit_message_text("📤 Uploading...")
+        await query.edit_message_text("📤 Uploading audio...")
 
         await query.message.reply_audio(
             audio=open("audio.mp3", "rb"),
@@ -155,28 +119,12 @@ async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_links[update.effective_user.id] = url
 
-    # 🎯 Detect platform
-    if "youtube.com" in url or "youtu.be" in url:
-
-        keyboard = [
-            [
-                InlineKeyboardButton("1080p", callback_data="yt_1080"),
-                InlineKeyboardButton("720p", callback_data="yt_720"),
-                InlineKeyboardButton("480p", callback_data="yt_480")
-            ],
-            [
-                InlineKeyboardButton("MP3", callback_data="audio")
-            ]
+    keyboard = [
+        [
+            InlineKeyboardButton("🎬 Video", callback_data="video"),
+            InlineKeyboardButton("🎵 MP3", callback_data="audio")
         ]
-
-    else:
-        # Instagram / FB / Pinterest
-        keyboard = [
-            [
-                InlineKeyboardButton("Video", callback_data="video"),
-                InlineKeyboardButton("MP3", callback_data="audio")
-            ]
-        ]
+    ]
 
     await update.message.reply_text(
         "Select option:",
